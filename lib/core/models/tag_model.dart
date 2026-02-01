@@ -69,9 +69,9 @@ class RoutineTag {
 
   factory RoutineTag.fromMap(Map<String, dynamic> map) {
     return RoutineTag(
-      routineId: map['routine_id'] as String,
-      tagId: map['tag_id'] as String,
-      assignedAt: DateTime.fromMillisecondsSinceEpoch(map['assigned_at'] as int),
+      routine_id: map['routine_id'] as String,
+      tag_id: map['tag_id'] as String,
+      assigned_at: DateTime.fromMillisecondsSinceEpoch(map['assigned_at'] as int),
     );
   }
 }
