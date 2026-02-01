@@ -178,8 +178,8 @@ class _EditProfileDialogState extends State<EditProfileDialog> {
                                 decoration: const BoxDecoration(
                                   color: Color(0xFF6750A4),
                                   shape: BoxShape.circle,
-                                  child: Icon(Icons.camera_alt, color: Colors.white, size: 20),
                                 ),
+                                child: const Icon(Icons.camera_alt, color: Colors.white, size: 20),
                               ),
                             ),
                           ],
