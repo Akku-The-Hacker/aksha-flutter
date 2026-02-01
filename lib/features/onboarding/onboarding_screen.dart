@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
-import '../../core/data/routine_templates.dart';
-import '../../core/repositories/routine_repository.dart';
-import '../../core/repositories/category_repository.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../auth/sign_in_screen.dart';
 
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({super.key});
@@ -12,65 +11,44 @@ class OnboardingScreen extends StatefulWidget {
 
 class _OnboardingScreenState extends State<OnboardingScreen> {
   final PageController _pageController = PageController();
-  final RoutineRepository _routineRepo = RoutineRepository();
-  final CategoryRepository _categoryRepo = CategoryRepository();
-  
   int _currentPage = 0;
-  bool _isLoading = false;
-  
-  // Selected templates to pre-populate
-  final Set<RoutineTemplate> _selectedTemplates = {};
 
   final List<OnboardingPage> _pages = [
     OnboardingPage(
-      title: 'Welcome to Aksha',
-      description: 'Track your routines honestly and build better habits.',
-      icon: Icons.track_changes,
-      color: const Color(0xFF6750A4),
-    ),
-    OnboardingPage(
-      title: 'Stay Consistent',
-      description: 'Complete daily tasks to maintain your streak and earn badges.',
-      icon: Icons.local_fire_department,
-      color: Colors.orange,
-    ),
-    OnboardingPage(
-      title: 'Gain Insights',
-      description: 'Visualize your progress with charts and calendar views.',
-      icon: Icons.insights,
+      title: 'Build Better Habits',
+      description: 'Create daily routines and track your progress with ease',
+      emoji: '🎯',
       color: Colors.blue,
     ),
     OnboardingPage(
-      title: 'Get Started',
-      description: 'Choose some starting routines or skip to create your own.',
-      icon: Icons.rocket_launch,
+      title: 'Stay Consistent',
+      description: 'Get reminders, track streaks, and earn achievements',
+      emoji: '🔥',
+      color: Colors.orange,
+    ),
+    OnboardingPage(
+      title: 'Own Your Data',
+      description: 'Everything stays on your device. Backup to Google Drive when you want',
+      emoji: '🔒',
       color: Colors.green,
     ),
   ];
 
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
   Future<void> _completeOnboarding() async {
-    setState(() => _isLoading = true);
-
-    try {
-      // Create selected routines
-      for (final template in _selectedTemplates) {
-        // Ensure category exists
-        final categoryId = await _categoryRepo.insert(template.category);
-        
-        // Create routine
-        for (final routine in template.routines) {
-          final newRoutine = routine.copyWith(categoryId: categoryId);
-          await _routineRepo.insert(newRoutine);
-        }
-      }
-
-      if (mounted) {
-        Navigator.of(context).pushReplacementNamed('/signup');
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('onboarding_complete', true);
+    
+    if (mounted) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => const SignInScreen()),
+      );
     }
   }
 
@@ -80,122 +58,151 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       body: SafeArea(
         child: Column(
           children: [
+            // Skip button
+            Align(
+              alignment: Alignment.topRight,
+              child: TextButton(
+                onPressed: _completeOnboarding,
+                child: const Text('Skip'),
+              ),
+            ),
+
+            // Page view
             Expanded(
               child: PageView.builder(
                 controller: _pageController,
-                itemCount: _pages.length,
                 onPageChanged: (index) {
                   setState(() => _currentPage = index);
                 },
+                itemCount: _pages.length,
                 itemBuilder: (context, index) {
-                  final page = _pages[index];
-                  if (index == _pages.length - 1) {
-                    return _buildTemplateSelectionPage(page);
-                  }
-                  return _buildPageContent(page);
+                  return _buildPage(_pages[index]);
                 },
               ),
             ),
-            
-            // Navigation controls
+
+            // Page indicator
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: List.generate(
+                _pages.length,
+                (index) => Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 4),
+                  width: _currentPage == index ? 24 : 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: _currentPage == index
+                        ? _pages[_currentPage].color
+                        : Colors.grey[300],
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 32),
+
+            // Navigation buttons
             Padding(
-              padding: const EdgeInsets.all(24),
+              padding: const EdgeInsets.symmetric(horizontal: 24),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  // Indicators
-                  Row(
-                    children: List.generate(_pages.length, (index) {
-                      return AnimatedContainer(
-                        duration: const Duration(milliseconds: 300),
-                        margin: const EdgeInsets.symmetric(horizontal: 4),
-                        height: 8,
-                        width: _currentPage == index ? 24 : 8,
-                        decoration: BoxDecoration(
-                          color: _currentPage == index
-                              ? const Color(0xFF6750A4)
-                              : Colors.grey[300],
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                      );
-                    }),
-                  ),
-                  
-                  // Next/Finish Button
+                  // Back button
+                  if (_currentPage > 0)
+                    TextButton(
+                      onPressed: () {
+                        _pageController.previousPage(
+                          duration: const Duration(milliseconds: 300),
+                          curve: Curves.easeInOut,
+                        );
+                      },
+                      child: const Text('Back'),
+                    )
+                  else
+                    const SizedBox(width: 80),
+
+                  // Next/Get Started button
                   ElevatedButton(
-                    onPressed: _isLoading
-                        ? null
-                        : () {
-                            if (_currentPage < _pages.length - 1) {
-                              _pageController.nextPage(
-                                duration: const Duration(milliseconds: 300),
-                                curve: Curves.easeInOut,
-                              );
-                            } else {
-                              _completeOnboarding();
-                            }
-                          },
+                    onPressed: () {
+                      if (_currentPage < _pages.length - 1) {
+                        _pageController.nextPage(
+                          duration: const Duration(milliseconds: 300),
+                          curve: Curves.easeInOut,
+                        );
+                      } else {
+                        _completeOnboarding();
+                      }
+                    },
                     style: ElevatedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(
                         horizontal: 32,
-                        vertical: 12,
+                        vertical: 16,
                       ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(24),
-                      ),
+                      backgroundColor: _pages[_currentPage].color,
                     ),
-                    child: _isLoading
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : Text(_currentPage == _pages.length - 1
-                            ? 'Get Started'
-                            : 'Next'),
+                    child: Text(
+                      _currentPage < _pages.length - 1
+                          ? 'Next'
+                          : 'Get Started',
+                      style: const TextStyle(fontSize: 16),
+                    ),
                   ),
                 ],
               ),
             ),
+
+            const SizedBox(height: 32),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildPageContent(OnboardingPage page) {
+  Widget _buildPage(OnboardingPage page) {
     return Padding(
       padding: const EdgeInsets.all(32),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
+          // Emoji
           Container(
-            padding: const EdgeInsets.all(32),
+            width: 160,
+            height: 160,
             decoration: BoxDecoration(
               color: page.color.withOpacity(0.1),
               shape: BoxShape.circle,
             ),
-            child: Icon(
-              page.icon,
-              size: 80,
+            child: Center(
+              child: Text(
+                page.emoji,
+                style: const TextStyle(fontSize: 80),
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 48),
+
+          // Title
+          Text(
+            page.title,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 32,
+              fontWeight: FontWeight.bold,
               color: page.color,
             ),
           ),
-          const SizedBox(height: 48),
-          Text(
-            page.title,
-            style: const TextStyle(
-              fontSize: 28,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
+
           const SizedBox(height: 16),
+
+          // Description
           Text(
             page.description,
             textAlign: TextAlign.center,
-            style: const TextStyle(
-              fontSize: 16,
-              color: Colors.grey,
+            style: TextStyle(
+              fontSize: 18,
+              color: Colors.grey[600],
               height: 1.5,
             ),
           ),
@@ -203,146 +210,18 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       ),
     );
   }
-
-  Widget _buildTemplateSelectionPage(OnboardingPage page) {
-    return ListView(
-      padding: const EdgeInsets.all(24),
-      children: [
-         const SizedBox(height: 24),
-         Text(
-          page.title,
-          style: const TextStyle(
-            fontSize: 28,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          page.description,
-          style: const TextStyle(
-            fontSize: 16,
-            color: Colors.grey,
-          ),
-        ),
-        const SizedBox(height: 32),
-        const Text(
-          'Popular Templates',
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        const SizedBox(height: 16),
-        
-        ...RoutineTemplateLibrary.templates.map((template) {
-          final isSelected = _selectedTemplates.contains(template);
-          
-          return Card(
-            margin: const EdgeInsets.only(bottom: 12),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-              side: BorderSide(
-                color: isSelected
-                    ? const Color(0xFF6750A4)
-                    : Colors.transparent,
-                width: 2,
-              ),
-            ),
-            elevation: isSelected ? 4 : 1,
-            child: InkWell(
-              onTap: () {
-                setState(() {
-                  if (isSelected) {
-                    _selectedTemplates.remove(template);
-                  } else {
-                    _selectedTemplates.add(template);
-                  }
-                });
-              },
-              borderRadius: BorderRadius.circular(12),
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: template.category.color.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Icon(
-                            _getIconData(template.category.iconName),
-                            color: template.category.color,
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: Text(
-                            template.category.name,
-                            style: const TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                        if (isSelected)
-                          const Icon(
-                            Icons.check_circle,
-                            color: Color(0xFF6750A4),
-                          ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: template.routines.map((r) {
-                        return Chip(
-                          label: Text(
-                            r.name,
-                            style: const TextStyle(fontSize: 12),
-                          ),
-                          backgroundColor: Colors.grey[100],
-                          visualDensity: VisualDensity.compact,
-                        );
-                      }).toList(),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          );
-        }),
-      ],
-    );
-  }
-
-  IconData _getIconData(String iconName) {
-    // Simple mapping for demo purposes
-    switch (iconName) {
-      case 'fitness_center': return Icons.fitness_center;
-      case 'meditation': return Icons.self_improvement; // closest to meditation
-      case 'work': return Icons.work;
-      case 'school': return Icons.school;
-      case 'health_and_safety': return Icons.health_and_safety;
-      default: return Icons.category;
-    }
-  }
 }
 
 class OnboardingPage {
   final String title;
   final String description;
-  final IconData icon;
+  final String emoji;
   final Color color;
 
   OnboardingPage({
     required this.title,
     required this.description,
-    required this.icon,
+    required this.emoji,
     required this.color,
   });
 }
