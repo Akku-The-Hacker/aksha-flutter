@@ -2,197 +2,370 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import '../../core/providers/daily_instance_provider.dart';
-import '../../core/services/quote_service.dart';
 import '../../core/models/daily_instance_model.dart';
-import '../focus/focus_mode_screen.dart';
-import '../pomodoro/pomodoro_timer_screen.dart';
+import '../../core/services/quote_service.dart';
+import 'instance_detail_dialog.dart';
 
-// Quote provider
-final dailyQuoteProvider = FutureProvider<Quote?>((ref) async {
-  final service = QuoteService();
-  return service.getDailyQuote();
-});
-
-class TodayScreen extends ConsumerWidget {
+class TodayScreen extends ConsumerStatefulWidget {
   const TodayScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
-    final instancesAsync = ref.watch(todaysInstancesProvider);
-    final quoteAsync = ref.watch(dailyQuoteProvider);
+  ConsumerState<TodayScreen> createState() => _TodayScreenState();
+}
+
+class _TodayScreenState extends ConsumerState<TodayScreen> {
+  String _dailyQuote = 'Ready to track your routines?';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDailyQuote();
+  }
+
+  Future<void> _loadDailyQuote() async {
+    final quote = await QuoteService.getDailyQuote();
+    if (mounted) {
+      setState(() {
+        _dailyQuote = quote;
+      });
+    }
+  }
+
+  String _getGreeting() {
+    final hour = DateTime.now().hour;
+    if (hour < 12) return '🌅 Good Morning';
+    if (hour < 17) return '☀️ Good Afternoon';
+    if (hour < 21) return '🌆 Good Evening';
+    return '🌙 Good Night';
+  }
+
+  void _previousDay() {
+    final current = ref.read(selectedDateProvider);
+    ref.read(selectedDateProvider.notifier).state =
+        current.subtract(const Duration(days: 1));
+  }
+
+  void _nextDay() {
+    final current = ref.read(selectedDateProvider);
+    ref.read(selectedDateProvider.notifier).state =
+        current.add(const Duration(days: 1));
+  }
+
+  void _jumpToDate() async {
+    final current = ref.read(selectedDateProvider);
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: current,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2030),
+    );
+
+    if (picked != null) {
+      ref.read(selectedDateProvider.notifier).state = picked;
+    }
+  }
+
+  bool _isToday(DateTime date) {
+    final now = DateTime.now();
+    return date.year == now.year &&
+        date.month == now.month &&
+        date.day == now.day;
+  }
+
+  String _formatTime(String time) {
+    final parts = time.split(':');
+    final hour = int.parse(parts[0]);
+    final minute = int.parse(parts[1]);
+    final period = hour >= 12 ? 'PM' : 'AM';
+    final displayHour = hour > 12 ? hour - 12 : (hour == 0 ? 12 : hour);
+    return '$displayHour:${minute.toString().padLeft(2, '0')} $period';
+  }
+
+  Color _getStatusColor(InstanceStatus status) {
+    switch (status) {
+      case InstanceStatus.done:
+        return const Color(0xFF10B981); // Green
+      case InstanceStatus.partial:
+        return const Color(0xFFF59E0B); // Amber
+      case InstanceStatus.skipped:
+        return Colors.grey;
+      case InstanceStatus.missed:
+        return const Color(0xFFEF4444); // Red
+      case InstanceStatus.pending:
+        return Colors.blue;
+    }
+  }
+
+  String _getStatusEmoji(InstanceStatus status) {
+    switch (status) {
+      case InstanceStatus.done:
+        return '✅';
+      case InstanceStatus.partial:
+        return '⚡';
+      case InstanceStatus.skipped:
+        return '⏭️';
+      case InstanceStatus.missed:
+        return '❌';
+      case InstanceStatus.pending:
+        return '⏳';
+    }
+  }
+
+  // Check if instance is currently active (overlaps current time)
+  bool _isCurrentRoutine(DailyInstance instance) {
+    final now = DateTime.now();
+    final todayStr = DateFormat('yyyy-MM-dd').format(now);
+    final selectedDate = ref.read(selectedDateProvider);
+    final selectedDateStr = DateFormat('yyyy-MM-dd').format(selectedDate);
+    
+    // Only highlight if viewing today
+    if (todayStr != selectedDateStr) return false;
+    
+    final nowMinutes = now.hour * 60 + now.minute;
+    final startParts = instance.plannedStart.split(':');
+    final endParts = instance.plannedEnd.split(':');
+    final startMinutes = int.parse(startParts[0]) * 60 + int.parse(startParts[1]);
+    final endMinutes = int.parse(endParts[0]) * 60 + int.parse(endParts[1]);
+    
+    // Handle overnight routines
+    if (endMinutes < startMinutes) {
+      return nowMinutes >= startMinutes || nowMinutes <= endMinutes;
+    }
+    return nowMinutes >= startMinutes && nowMinutes <= endMinutes;
+  }
+
+  // Sort instances: Current > Upcoming > Past
+  List<DailyInstance> _sortInstancesByTimeRelevance(List<DailyInstance> instances, DateTime date) {
+    final now = DateTime.now();
+    final todayStr = DateFormat('yyyy-MM-dd').format(now);
+    final dateStr = DateFormat('yyyy-MM-dd').format(date);
+    final nowMinutes = now.hour * 60 + now.minute;
+    
+    // If not viewing today, just sort by start time
+    if (todayStr != dateStr) {
+      final sorted = List<DailyInstance>.from(instances);
+      sorted.sort((a, b) {
+        final aStart = _parseTimeToMinutes(a.plannedStart);
+        final bStart = _parseTimeToMinutes(b.plannedStart);
+        return aStart.compareTo(bStart);
+      });
+      return sorted;
+    }
+    
+    // For today: Current first, then upcoming, then past
+    final current = <DailyInstance>[];
+    final upcoming = <DailyInstance>[];
+    final past = <DailyInstance>[];
+    
+    for (final instance in instances) {
+      final startMinutes = _parseTimeToMinutes(instance.plannedStart);
+      final endMinutes = _parseTimeToMinutes(instance.plannedEnd);
+      
+      // Handle overnight routines
+      final isOvernight = endMinutes < startMinutes;
+      bool isCurrent;
+      bool isPast;
+      
+      if (isOvernight) {
+        isCurrent = nowMinutes >= startMinutes || nowMinutes <= endMinutes;
+        isPast = nowMinutes > endMinutes && nowMinutes < startMinutes;
+      } else {
+        isCurrent = nowMinutes >= startMinutes && nowMinutes <= endMinutes;
+        isPast = nowMinutes > endMinutes;
+      }
+      
+      if (isCurrent) {
+        current.add(instance);
+      } else if (isPast) {
+        past.add(instance);
+      } else {
+        upcoming.add(instance);
+      }
+    }
+    
+    // Sort each group by start time
+    current.sort((a, b) => _parseTimeToMinutes(a.plannedStart).compareTo(_parseTimeToMinutes(b.plannedStart)));
+    upcoming.sort((a, b) => _parseTimeToMinutes(a.plannedStart).compareTo(_parseTimeToMinutes(b.plannedStart)));
+    past.sort((a, b) => _parseTimeToMinutes(a.plannedStart).compareTo(_parseTimeToMinutes(b.plannedStart)));
+    
+    return [...current, ...upcoming, ...past];
+  }
+
+  int _parseTimeToMinutes(String time) {
+    final parts = time.split(':');
+    return int.parse(parts[0]) * 60 + int.parse(parts[1]);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final selectedDate = ref.watch(selectedDateProvider);
+    final dateFormat = DateFormat('EEE, MMM d');
+    final instancesAsync = ref.watch(selectedDateInstancesProvider);
+    final dateStr = DateFormat('yyyy-MM-dd').format(selectedDate);
 
     return Scaffold(
-      body: CustomScrollView(
-        slivers: [
-          // App Bar with Date & Greetings
-          SliverAppBar(
-            floating: true,
-            expandedHeight: 120,
-            flexibleSpace: FlexibleSpaceBar(
-              titlePadding: const EdgeInsets.only(left: 16, bottom: 16),
-              title: Column(
-                mainAxisAlignment: MainAxisAlignment.end,
+      appBar: AppBar(
+        title: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.chevron_left),
+              onPressed: _previousDay,
+            ),
+            TextButton(
+              onPressed: _jumpToDate,
+              child: Text(
+                _isToday(selectedDate) ? 'Today' : dateFormat.format(selectedDate),
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.chevron_right),
+              onPressed: _nextDay,
+            ),
+          ],
+        ),
+      ),
+      body: Column(
+        children: [
+          // Greeting banner (only show for today)
+          if (_isToday(selectedDate))
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    const Color(0xFF6750A4).withOpacity(0.1),
+                    const Color(0xFF6750A4).withOpacity(0.05),
+                  ],
+                ),
+              ),
+              child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    DateFormat('EEEE, MMM d').format(DateTime.now()),
+                    _getGreeting(),
                     style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.normal,
-                      color: Colors.white70,
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
                     ),
                   ),
-                  const Text(
-                    'Today\'s Focus',
-                    style: TextStyle(fontWeight: FontWeight.bold),
+                  const SizedBox(height: 4),
+                  Text(
+                    _dailyQuote,
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey[600],
+                    ),
                   ),
                 ],
               ),
-              background: _buildHeaderBackground(context, quoteAsync),
             ),
-          ),
 
-          // Content
-          instancesAsync.when(
-            data: (instances) {
-              if (instances.isEmpty) {
-                return SliverFillRemaining(
-                  child: Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.weekend, size: 64, color: Colors.grey[300]),
-                        const SizedBox(height: 16),
-                        Text(
-                          'No routines scheduled for today',
-                          style: TextStyle(
-                            fontSize: 16,
-                            color: Colors.grey[600],
-                          ),
-                        ),
-                        TextButton(
-                          onPressed: () {
-                            // Navigate to routines tab
-                            // This would typically involve using a specialized provider or callback
-                          },
-                          child: const Text('Manage Routines'),
-                        ),
-                      ],
-                    ),
+          // Main content
+          Expanded(
+            child: instancesAsync.when(
+              data: (instances) {
+                if (instances.isEmpty) {
+                  return _buildEmptyState();
+                }
+
+                // Sort instances by time relevance (current > upcoming > past)
+                final sortedInstances = _sortInstancesByTimeRelevance(instances, selectedDate);
+
+                return RefreshIndicator(
+                  onRefresh: () async {
+                    ref.invalidate(dailyInstancesProvider(dateStr));
+                  },
+                  child: ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: sortedInstances.length + 1, // +1 for summary
+                    itemBuilder: (context, index) {
+                      if (index == 0) {
+                        return _buildSummary(sortedInstances);
+                      }
+                      
+                      final instance = sortedInstances[index - 1];
+                      final isCurrent = _isCurrentRoutine(instance);
+                      return _InstanceCard(
+                        instance: instance,
+                        dateStr: dateStr,
+                        formatTime: _formatTime,
+                        getStatusColor: _getStatusColor,
+                        getStatusEmoji: _getStatusEmoji,
+                        isCurrent: isCurrent,
+                        onTap: () async {
+                          await showDialog(
+                            context: context,
+                            builder: (_) => InstanceDetailDialog(
+                              instance: instance,
+                              dateStr: dateStr,
+                            ),
+                          );
+                        },
+                        onStatusChange: (status) async {
+                          await ref
+                              .read(dailyInstancesProvider(dateStr).notifier)
+                              .updateStatus(instance.id, status);
+                        },
+                      );
+                    },
                   ),
                 );
-              }
-
-              // Segregate instances
-              final pending = instances
-                  .where((i) =>
-                      i.status == InstanceStatus.pending ||
-                      i.status == InstanceStatus.partial)
-                  .toList();
-              final completed = instances
-                  .where((i) =>
-                      i.status == InstanceStatus.done ||
-                      i.status == InstanceStatus.skipped ||
-                      i.status == InstanceStatus.missed)
-                  .toList();
-
-              return SliverList(
-                delegate: SliverChildListDelegate([
-                  if (pending.isNotEmpty) ...[
-                    _buildSectionHeader('UP NEXT'),
-                    ...pending.map(
-                        (instance) => _buildInstanceCard(context, ref, instance)),
+              },
+              loading: () => const Center(child: CircularProgressIndicator()),
+              error: (error, stack) => Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.error_outline, size: 48, color: Colors.red),
+                    const SizedBox(height: 16),
+                    Text('Error: $error'),
+                    const SizedBox(height: 16),
+                    ElevatedButton(
+                      onPressed: () => ref.invalidate(dailyInstancesProvider(dateStr)),
+                      child: const Text('Retry'),
+                    ),
                   ],
-                  if (completed.isNotEmpty) ...[
-                    _buildSectionHeader('COMPLETED'),
-                    ...completed.map((instance) =>
-                        _buildInstanceCard(context, ref, instance, isDone: true)),
-                  ],
-                  const SizedBox(height: 80), // Bottom padding
-                ]),
-              );
-            },
-            loading: () => const SliverFillRemaining(
-              child: Center(child: CircularProgressIndicator()),
-            ),
-            error: (e, s) => SliverFillRemaining(
-              child: Center(child: Text('Error: $e')),
+                ),
+              ),
             ),
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {
-          // Open Pomodoro Timer without specific routine
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => const PomodoroTimerScreen(),
-            ),
-          );
-        },
-        icon: const Icon(Icons.timer),
-        label: const Text('Focus'),
-      ),
     );
   }
 
-  Widget _buildHeaderBackground(
-      BuildContext context, AsyncValue<Quote?> quoteAsync) {
-    return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFF6750A4), Color(0xFF9C27B0)],
-        ),
-      ),
-      child: Stack(
+  Widget _buildEmptyState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          // Decorative circles
-          Positioned(
-            right: -50,
-            top: -50,
-            child: CircleAvatar(
-              radius: 100,
-              backgroundColor: Colors.white.withOpacity(0.1),
+          Icon(
+            Icons.calendar_today,
+            size: 80,
+            color: Colors.grey[300],
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'No routines scheduled',
+            style: TextStyle(
+              fontSize: 18,
+              color: Colors.grey[600],
+              fontWeight: FontWeight.w500,
             ),
           ),
-          
-          // Quote
-          Positioned(
-            top: 40,
-            left: 20,
-            right: 20,
-            child: quoteAsync.when(
-              data: (quote) => quote != null
-                  ? Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '"${quote.text}"',
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontStyle: FontStyle.italic,
-                            fontSize: 14,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          "- ${quote.author}",
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 12,
-                          ),
-                        ),
-                      ],
-                    )
-                  : const SizedBox(),
-              loading: () => const SizedBox(),
-              error: (_, __) => const SizedBox(),
+          const SizedBox(height: 8),
+          Text(
+            'Go to Routine tab to create one',
+            style: TextStyle(
+              fontSize: 14,
+              color: Colors.grey[500],
             ),
           ),
         ],
@@ -200,106 +373,233 @@ class TodayScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildSectionHeader(String title) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
-      child: Text(
-        title,
-        style: const TextStyle(
-          fontSize: 12,
-          fontWeight: FontWeight.bold,
-          color: Colors.grey,
-          letterSpacing: 1.2,
-        ),
+  Widget _buildSummary(List<DailyInstance> instances) {
+    final doneCount = instances.where((i) => i.status == InstanceStatus.done).length;
+    final totalCount = instances.length;
+    final percentage = totalCount > 0 ? (doneCount / totalCount * 100).round() : 0;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF6750A4).withOpacity(0.08),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Progress: $doneCount/$totalCount',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              Text(
+                '$percentage%',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: percentage >= 80 ? Colors.green : (percentage >= 50 ? Colors.orange : Colors.grey[700]),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: totalCount > 0 ? doneCount / totalCount : 0,
+              minHeight: 6,
+              backgroundColor: Colors.grey[300],
+              valueColor: AlwaysStoppedAnimation<Color>(
+                percentage >= 80 ? Colors.green : (percentage >= 50 ? Colors.orange : const Color(0xFF6750A4)),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
+}
 
-  Widget _buildInstanceCard(
-      BuildContext context, WidgetRef ref, DailyInstance instance,
-      {bool isDone = false}) {
-    // In a real app, resolve routine details from provider/repo
-    // For now, assume routineName is sufficient or available
-    
-    return Dismissible(
-      key: Key(instance.id.toString()),
-      background: Container(
-        color: Colors.green,
-        alignment: Alignment.centerLeft,
-        padding: const EdgeInsets.only(left: 20),
-        child: const Icon(Icons.check, color: Colors.white),
-      ),
-      secondaryBackground: Container(
-        color: Colors.red,
-        alignment: Alignment.centerRight,
-        padding: const EdgeInsets.only(right: 20),
-        child: const Icon(Icons.close, color: Colors.white),
-      ),
-      confirmDismiss: (direction) async {
-        if (isDone) return false; // Already done, maybe allow un-doing later
+// Instance Card Widget
+class _InstanceCard extends ConsumerWidget {
+  final DailyInstance instance;
+  final String dateStr;
+  final String Function(String) formatTime;
+  final Color Function(InstanceStatus) getStatusColor;
+  final String Function(InstanceStatus) getStatusEmoji;
+  final VoidCallback onTap;
+  final Function(InstanceStatus) onStatusChange;
+  final bool isCurrent;
 
-        final status = direction == DismissDirection.startToEnd
-            ? InstanceStatus.done
-            : InstanceStatus.skipped;
-        
-        // Update status via provider
-        final notifier = ref.read(dailyInstancesProvider(instance.date).notifier);
-        await notifier.updateStatus(instance.id!, status);
-        
-        return false; // Don't actually remove from list (let provider refresh move it)
-      },
-      child: Card(
-        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-        elevation: isDone ? 0 : 2,
-        color: isDone ? Colors.grey[100] : Colors.white,
-        child: ListTile(
-          leading: Container(
-            width: 48,
-            height: 48,
-            decoration: BoxDecoration(
-              color: isDone ? Colors.grey[300] : const Color(0xFF6750A4).withOpacity(0.1),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Icon(
-              isDone ? Icons.check : Icons.circle_outlined,
-              color: isDone ? Colors.grey[600] : const Color(0xFF6750A4),
-            ),
-          ),
-          title: Text(
-            instance.routineName,
-            style: TextStyle(
-              decoration: isDone ? TextDecoration.lineThrough : null,
-              color: isDone ? Colors.grey : Colors.black,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          subtitle: Text(
-            '${instance.plannedStart} - ${instance.plannedEnd} (${instance.plannedMinutes}m)',
-            style: TextStyle(color: isDone ? Colors.grey[400] : Colors.grey[600]),
-          ),
-          trailing: isDone
-              ? null
-              : IconButton(
-                  icon: const Icon(Icons.play_arrow),
-                  color: Colors.green,
-                  onPressed: () {
-                    // Start Focus Mode
-                    // Need to fetch full routine object in real app
-                    // Simulating for now
-                    /*
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => FocusModeScreen(
-                          routine: routine_object,
-                          durationMinutes: instance.plannedMinutes,
+  const _InstanceCard({
+    required this.instance,
+    required this.dateStr,
+    required this.formatTime,
+    required this.getStatusColor,
+    required this.getStatusEmoji,
+    required this.onTap,
+    required this.onStatusChange,
+    this.isCurrent = false,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final color = instance.categoryColor != null
+        ? Color(int.parse(instance.categoryColor!.replaceFirst('#', '0xFF')))
+        : Colors.grey;
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: isCurrent
+            ? BorderSide(color: Theme.of(context).colorScheme.primary, width: 2)
+            : BorderSide.none,
+      ),
+      elevation: isCurrent ? 4 : 1,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Current indicator banner
+            if (isCurrent)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.primary,
+                  borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(10),
+                    topRight: Radius.circular(10),
+                  ),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.play_arrow, color: Colors.white, size: 16),
+                    SizedBox(width: 4),
+                    Text(
+                      'NOW',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            // Main content
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 4,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color: color,
+                          borderRadius: BorderRadius.circular(2),
                         ),
                       ),
-                    );
-                    */
-                  },
-                ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              instance.routineName,
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Row(
+                              children: [
+                                const Icon(Icons.schedule, size: 14, color: Colors.grey),
+                                const SizedBox(width: 4),
+                                Text(
+                                  '${formatTime(instance.plannedStart)} - ${formatTime(instance.plannedEnd)}',
+                                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  '(${(instance.plannedMinutes / 60).toStringAsFixed(1)} hrs)',
+                                  style: TextStyle(fontSize: 11, color: Colors.grey[500]),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      Text(
+                        getStatusEmoji(instance.status),
+                        style: const TextStyle(fontSize: 24),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  // Status buttons
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      _statusButton(
+                        context,
+                        'Done',
+                        InstanceStatus.done,
+                        Icons.check_circle,
+                        const Color(0xFF10B981),
+                      ),
+                      _statusButton(
+                        context,
+                        'Partial',
+                        InstanceStatus.partial,
+                        Icons.bolt,
+                        const Color(0xFFF59E0B),
+                      ),
+                      _statusButton(
+                        context,
+                        'Skip',
+                        InstanceStatus.skipped,
+                        Icons.skip_next,
+                        Colors.grey,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
+      ),
+    );
+  }
+
+  Widget _statusButton(
+    BuildContext context,
+    String label,
+    InstanceStatus status,
+    IconData icon,
+    Color color,
+  ) {
+    final isSelected = instance.status == status;
+    
+    return OutlinedButton.icon(
+      onPressed: () => onStatusChange(status),
+      icon: Icon(icon, size: 16),
+      label: Text(label),
+      style: OutlinedButton.styleFrom(
+        foregroundColor: isSelected ? Colors.white : color,
+        backgroundColor: isSelected ? color : null,
+        side: BorderSide(color: color),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       ),
     );
   }
