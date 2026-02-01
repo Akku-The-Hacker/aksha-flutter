@@ -328,6 +328,5 @@ class ManageTagsScreen extends ConsumerWidget {
     Colors.amber,
     Colors.orange,
     Colors.deepOrange,
-    Colors.brown,
   ];
 }
